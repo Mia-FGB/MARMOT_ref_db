@@ -5,6 +5,8 @@ import argparse
 from ete3 import NCBITaxa
 import requests
 
+# Script to create a database of pathogens from PHIbase and DEFRA Risk Register
+
 # Initialize NCBI Taxa object ===
 # this is instead of accessionTaxa.sql in R script
 ncbi = NCBITaxa()

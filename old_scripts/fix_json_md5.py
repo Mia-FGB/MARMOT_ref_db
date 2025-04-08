@@ -1,3 +1,5 @@
+# A script to fix the dlLinkMD5 in a JSON file, specific use case when download.py did not run correctly 
+
 import json
 
 def fix_json_file(input_path, output_path):
