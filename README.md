@@ -29,7 +29,7 @@ mkdir Pathogen_Database_DDMMYY
 
 ---
 
-## Step 3: Run the Scripts
+## Wrapper script to execute all stages 
 
 **Navigate to working directory:**
 ```bash
@@ -41,7 +41,21 @@ cd /Users/berelsom/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Pat
 conda activate pathogen-database
 ```
 
-### Make the JSON:
+**Submit script:**
+```bash
+  ./scripts/build_reference_database.sh \
+    -p path/to/phibase.csv \
+    -r path/to/riskregister.csv \
+    -d MMYYYY \
+    -o Pathogen_Database_MMYYYY
+```
+
+This script goes through the following steps but as one script
+
+
+### Scripts the wrapper executes
+
+#### Make the JSON:
 ```bash
 python scripts/Make_Pathogen_Database.py \
   --phibase Pathogen_Database_Test/phibase_test.csv \
@@ -49,7 +63,7 @@ python scripts/Make_Pathogen_Database.py \
   --output test_download
 ```
 
-### Download and Build Database:
+#### Download and Build Database:
 ```bash
 python scripts/download.py --input test_download --date MMYYYY
 ```
