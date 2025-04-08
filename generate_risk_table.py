@@ -39,7 +39,7 @@ risk['Regulated'] = risk['EU and EPPO listing'].apply(
 )
 
 # Create a new column 'Natural Spread' based on the condition
-risk['Natural Spread'] = risk['Pathways'].apply(
+risk['Natural_Spread'] = risk['Pathways'].apply(
     lambda x: 'Yes' if isinstance(x, str) and 'natural spread' in x.lower() else 'No'
 )
 
@@ -53,9 +53,9 @@ risk = risk.rename(columns={
     'Likelihood': 'Likelihood_unmitigated',
     'Likelihood.1': 'Likelihood_mitigated',
     'Impact ': 'Impact_unmitigated',
-    'Impact .1': 'Impact_mitigated)',
+    'Impact .1': 'Impact_mitigated',
     'UK Relative Risk Rating (unmitigated)': 'Risk_Rating_unmitigated',
-    'UK Relative Risk Rating (mitigated)': 'Risk_Rating_mitigated'
+    'UK Relative Risk Rating (mitigated)': 'Risk_Rating_mitigated',
     'Scenario for Risk Register': 'Scenario_for_Risk_Register'
 })
 
