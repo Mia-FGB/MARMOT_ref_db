@@ -48,12 +48,15 @@ risk = risk.drop(columns=['EU and EPPO listing', 'Pathways'])
 
  # Rename some columns 
 risk = risk.rename(columns={
-    'Likelihood': 'Likelihood (unmitigated)',
-    'Likelihood.1': 'Likelihood (mitigated)',
-    'Impact ': 'Impact (unmitigated)',
-    'Impact .1': 'Impact (mitigated)',
-    'UK Relative Risk Rating (unmitigated)': 'Risk Rating (unmitigated)',
-    'UK Relative Risk Rating (mitigated)': 'Risk Rating (mitigated)'
+    'Type of pest': 'Type_of_pest',
+    'Pest Name': 'Pest_Name',
+    'Likelihood': 'Likelihood_unmitigated',
+    'Likelihood.1': 'Likelihood_mitigated',
+    'Impact ': 'Impact_unmitigated',
+    'Impact .1': 'Impact_mitigated)',
+    'UK Relative Risk Rating (unmitigated)': 'Risk_Rating_unmitigated',
+    'UK Relative Risk Rating (mitigated)': 'Risk_Rating_mitigated'
+    'Scenario for Risk Register': 'Scenario_for_Risk_Register'
 })
 
 # Output the DataFrame to a CSV file
