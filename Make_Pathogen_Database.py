@@ -6,6 +6,13 @@ from ete3 import NCBITaxa
 import requests
 
 # Script to create a database of pathogens from PHIbase and DEFRA Risk Register
+# In conda environment pathogen-database
+# Usage: python scripts/Make_Pathogen_Database.py \
+#  --phibase Pathogen_Database_Test/phibase_test.csv \
+#  --risk_register Pathogen_Database_Test/Risk_Register_Test.csv \
+#  --output Download_MMYY_
+
+# Output of this script can then be used in download.py
 
 # Initialize NCBI Taxa object ===
 # this is instead of accessionTaxa.sql in R script

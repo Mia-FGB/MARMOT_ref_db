@@ -18,13 +18,13 @@ mkdir Pathogen_Database_DDMMYY
 ## Step 2: Download Latest CSV Files
 
 ### 🧬 PHI-base:
-- Go to: https://github.com/PHI-base/data/tree/master/releases
+- https://github.com/PHI-base/data/tree/master/releases
 - Download `phibase_current.csv`
 - **Rename** to: `phibase_vers.csv` (e.g., `phibase_4.17.csv`)
 - Use the release **month & date** in your filenames
 
 ### 🌿 DEFRA Risk Register:
-- Source: **UK Plant Health Risk Register**
+- https://planthealthportal.defra.gov.uk/pests-and-diseases/uk-plant-health-risk-register/
 - Save as: `Risk_Register_MMYY.csv`
 
 ---

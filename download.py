@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
 #run in Conda environment = pathogen_database
+# Uses the output from Make_Pathogen_Database.py
+# This script downloads FASTA files from NCBI, checks their checksums, modifies headers, and concatenates them into a single database.
+# python scripts/download.py --input Download_MMYY_ --date MMYYYY
+
 
 import os
 import hashlib
@@ -129,8 +133,8 @@ def main():
             else:
                 logging.info(f"{filename} already exists, skipping download.")
         
-    # Concatenate the downloaded files into one large database
-    output_filename = f"../pathogen_database_{args.date}.fa"
+    # Concatenate the downloaded files into one large database - save where the script is run
+    output_filename = f"pathogen_database_{args.date}.fa"
     concatenate_files(all_files, output_filename)
     logging.info(f"Concatenated files into {output_filename}")
          
