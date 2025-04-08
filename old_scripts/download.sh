@@ -1,5 +1,6 @@
 #!/bin/bash
-#No longer use this script - instead use download.py which is much faster
+#Note this script may need further imprivements if there are files inside download that aren't in download.txt
+#no longer use this script - instead use download.py which is much fater
 
 mkdir -p download
 cd download
