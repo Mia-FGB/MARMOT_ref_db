@@ -3,7 +3,7 @@
 #run in Conda environment = pathogen_database
 # Uses the output from Make_Pathogen_Database.py
 # This script downloads FASTA files from NCBI, checks their checksums, modifies headers, and concatenates them into a single database.
-# python scripts/download.py --input Download_MMYY_ --date MMYYYY
+# python scripts/download.py --i Download_MMYY_ --d MMYYYY --o Pathogen_Database_MMYYYY
 
 
 import os
@@ -50,7 +50,7 @@ def check_and_log_checksum(error_log, filename, md5_url, organism_id, taxid,fast
             download_file(fasta_url, filename)
             new_calculated_checksum = calculate_checksum(filename)
             if expected_checksum != new_calculated_checksum:
-                logging.error(f"Failed to download {filename} correctly.")
+                logging.error(f"Failed to download {filename} correctly, after 2 attempts.")
                 with open(error_log, 'a') as err_log:
                     err_log.write(f"Organism ID: {organism_id}, TaxID: {taxid}, MD5 URL: {md5_url}, FASTA URL: {fasta_url}\n")
         else:
@@ -97,23 +97,39 @@ def main():
     os.makedirs("download", exist_ok=True)
     os.chdir("download")
 
-    #Add command line arguments ===
+    # Add command line arguments
     parser = argparse.ArgumentParser(description="Provide Date as a prefix and input file")
     parser.add_argument("-i", "--input", required=True, help="Input file with list of URLs")
     parser.add_argument("-d", "--date", required=True, help="Date in MMYYYY format")
+    parser.add_argument("-o", "--output", required=True, help="Output Directory (Pathogen_Database_MMYYYY)")
 
     # Parse the command line arguments
-    args = parser.parse_args() 
+    args = parser.parse_args()
+
+    # Check log directory exists, if not make it
+    if not os.path.exists("../" + args.output + '/logs/'):
+        os.makedirs("../" + args.output + '/logs/')
 
     # Set up logging
-    output_log = '../logs/' + args.date + '_output_log.txt'
+    output_log = "../" + args.output + '/logs/' + args.date + '_output_log.txt'
     logging.basicConfig(filename=output_log, level=logging.INFO, format='%(asctime)s - %(message)s')
-    error_log = '../logs/' + args.date + '_error_log.txt'
+
+    # Create a separate error log file
+    error_log = "../" + args.output + '/logs/' + args.date + '_error_log.txt'
+    logging.basicConfig(
+        filename=output_log,
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    error_handler = logging.FileHandler(error_log)
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(error_handler)
 
     all_files = []
 
-#    Open the JSON file and process it
-    with open('../' + args.input + '.json', 'r') as f:
+    # Open the JSON file and process it
+    with open("../" + args.input + '.json', 'r') as f:
         data = json.load(f)
         for entry in tqdm(data, desc="Processing entries"):
             taxid = entry['taxid']
@@ -125,19 +141,19 @@ def main():
 
             all_files.append(filename)
 
-#           Check if the file already exists in download directory
+            # Check if the file already exists in the download directory
             if not os.path.isfile(filename):
                 download_file(fasta_url, filename)
-                check_and_log_checksum(error_log, filename, md5_url, organism_name, taxid, fasta_url)
+                check_and_log_checksum(error_log, filename, md5_url, taxid, organism_name, fasta_url)
                 modify_fasta_headers(filename, taxid, organism_name)
             else:
                 logging.info(f"{filename} already exists, skipping download.")
         
-    # Concatenate the downloaded files into one large database - save where the script is run
-    output_filename = f"pathogen_database_{args.date}.fa"
+    # Concatenate the downloaded files into one large database - save in the output directory
+    output_filename = "../" + args.output + '/pathogen_database_' + args.date + ".fa"
+    # Ensure the output file exists before concatenation
     concatenate_files(all_files, output_filename)
     logging.info(f"Concatenated files into {output_filename}")
-         
 
 if __name__ == "__main__":
     main()

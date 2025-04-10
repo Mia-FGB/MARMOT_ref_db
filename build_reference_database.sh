@@ -56,16 +56,33 @@ if [[ ! -f "$RISK_REGISTER_CSV" ]]; then
   exit 1
 fi
 
-# Create output directory and move into it
+# Create output directory if it doesn't exist
 echo "Creating output directory: $OUTDIR"
 mkdir -p "$OUTDIR"
+mkdir -p "$OUTDIR/logs"
+
+# Set up logging
+LOGFILE="$OUTDIR/logs/build_reference_database.log"
+exec > >(tee -a "$LOGFILE") 2>&1 # Redirect stdout and stderr to log file
+echo "Logging to $LOGFILE"
+
+# Activate conda environment
+echo "Activating conda environment..."
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate pathogen_database
+if [[ $? -ne 0 ]]; then
+  echo "Error: Failed to activate conda environment."
+  exit 1
+fi
+echo "Conda environment activated."
+
 
 # Generate risk table 
 python scripts/generate_risk_table.py -i $RISK_REGISTER_CSV -o $OUTDIR/risk_table.csv
 echo "Risk table generated: risk_table.csv"
 
-# Run Make_Pathogen_Database.py
-echo "Generating pathogen database..."
+# Run Make_Pathogen_Database.py - Takes a long time 
+echo "Generating pathogen json list ..."
 
 python scripts/Make_Pathogen_Database.py \
   --phibase "$PHIBASE_CSV" \
@@ -75,14 +92,18 @@ python scripts/Make_Pathogen_Database.py \
 echo "Pathogen database generated: download_input_${DATE_TAG}"
 
 # Download genomes & Build database
-echo "Downloading genomes and building database..."
+echo "Downloading genomes and building database pathogen_database_${DATE_TAG}.fa..."
+# Overwrite the existing output database if there is one
+> "$OUTDIR/pathogen_database_${DATE_TAG}.fa"
+
 python scripts/download.py \
-  --input "$OUTDIR/download_input_${DATE_TAG}" \
-  --date "$DATE_TAG"
-echo "Genomes downloaded and database built."
+  -i "$OUTDIR/download_input_${DATE_TAG}" \
+  -d "$DATE_TAG" \
+  -o "$OUTDIR"
+echo "Genomes downloaded and database built, output: pathogen_database_${DATE_TAG}.fa"
 
 # Generate lengths table 
 echo "Generating genome lengths table..."
-python scripts/genome_lengths_from_fasta.py pathogen_database_${DATE_TAG}.fa $OUTDIR/${DATE_TAG}
+python scripts/genome_lengths_from_fasta.py $OUTDIR/pathogen_database_${DATE_TAG}.fa $OUTDIR/${DATE_TAG}
 
 echo "Generated genome lengths table: ${DATE_TAG}_genome_lengths.tsv"
