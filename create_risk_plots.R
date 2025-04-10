@@ -6,6 +6,7 @@ library(dplyr)
 library(tidyverse)
 
 # Species data -------
+#This specific file was copied 
 lca_parse <- read.csv("lcaparse_summary.txt", sep = "\t")
 
 # Extract species from lca_parse
@@ -13,6 +14,24 @@ species_df <- lca_parse %>%
   filter(Taxon_Rank == "species") %>%
   mutate(Species = str_split(Taxon_Path, ",", simplify = FALSE) %>%
            map_chr(~ tail(.x, 1)))
+
+# Get all non-species rows (higher taxa)
+higher_taxa_df <- lca_parse %>%
+  filter(Taxon_Rank != "species") %>%
+  group_by(Barcode) %>%
+  summarise(
+    Read_Count = sum(as.numeric(Read_Count), na.rm = TRUE),
+    Percentage_of_Reads = sum(as.numeric(Percentage_of_Reads), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Species = "Higher Taxa",
+    Taxon_Rank = "higher",
+    Taxon_Path = NA  # or "Higher-level taxon"
+  )
+
+# Combine species & higher taxa dfs
+combined_df <- bind_rows(species_df, higher_taxa_df) 
 
 # Risk data ------
 risk_table <- read.csv("risk_table.csv")
@@ -53,9 +72,10 @@ collapsed_risk_table <- risk_table %>%
   )
 
 
-# Merge the data   -------       
-merged_df <- left_join(species_df, collapsed_risk_table, by = "Species") %>% 
-  filter(Read_Count >10) # Filter low level species that could be artefacts, may need to play with filter
+# Merge the lcaparse & risk data   -------       
+merged_df <- left_join(combined_df, collapsed_risk_table, by = "Species") %>% 
+  filter(Read_Count >10) %>% # Filter low level species that could be artefacts, may need to play with filter 
+  filter(Barcode <=39) # Filter to jsut be barcode 1 - 39 as this is CF 2023 data (won't do this in future)
 
 # Add a column that groups by risk factor - groupings based on DEFRA documentation
 
@@ -98,9 +118,9 @@ colours <- c(
 )
 
 # Plot stacked bar chart
-ggplot(
-  # merged_df, # To plot with unclassified 
-  risk_only,   # To plot without unclassified 
+stacked <- ggplot(
+  merged_df, # To plot with unclassified 
+  # risk_only,   # To plot without unclassified 
        aes(x = Barcode, y = Percentage_of_Reads, fill = Risk_Category)) +
   geom_bar(stat = "identity") +
   scale_fill_manual(values = colours) +
@@ -110,7 +130,9 @@ ggplot(
     y = "Percentage of Reads",
     fill = "Risk Category"
   ) +
-  theme_minimal()
+  theme_minimal() 
+
+ggsave("test_plot.svg", stacked, width = 12, height =6 )
 
 # Faceted by Presence 
 risk_only$UK<- factor(
@@ -119,7 +141,7 @@ risk_only$UK<- factor(
              "Present (Widespread)", "N/A")
 )
 
-ggplot(risk_only,
+presence <- ggplot(risk_only,
   aes(x = Barcode, y = Percentage_of_Reads, fill = Risk_Category)) +
   facet_wrap(~ UK, scales = "free_y") +
   geom_bar(stat = "identity") +
@@ -131,6 +153,8 @@ ggplot(risk_only,
     fill = "Risk Category"
   ) +
   theme_minimal()
+
+ggsave("test_facet_plot.svg", presence, width = 16, height =6 )
 
 
 # Maybe a file with some general stats about the data e.g. which had the highest risk rating 
