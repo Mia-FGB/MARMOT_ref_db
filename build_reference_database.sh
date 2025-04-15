@@ -87,9 +87,10 @@ echo "Generating pathogen json list ..."
 python scripts/Make_Pathogen_Database.py \
   --phibase "$PHIBASE_CSV" \
   --risk_register "$RISK_REGISTER_CSV" \
-  --output "$OUTDIR/download_input_${DATE_TAG}"
+  --output "$OUTDIR/download_input_${DATE_TAG}" \
+  >> "$OUTDIR/logs/pathogen_database_generation.log" 2>&1
 
-echo "Pathogen database generated: download_input_${DATE_TAG}"
+echo "Pathogen database generated: download_input_${DATE_TAG}" >> "$OUTDIR/logs/pathogen_database_generation.log" 2>&1
 
 # Download genomes & Build database
 echo "Downloading genomes and building database pathogen_database_${DATE_TAG}.fa..."

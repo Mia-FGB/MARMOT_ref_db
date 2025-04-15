@@ -188,21 +188,7 @@ def main():
     #read in phibase 
     print("Reading in", args.phibase)
     phibase = pd.read_csv(args.phibase)
-
-    # Check for the correct host column (handle potential typo)
-    if "Host_description" in phibase.columns:
-        host_column = "Host_description"
-    elif "Host_descripton" in phibase.columns:  # Note typo here
-        host_column = "Host_descripton"
-    else:
-        raise ValueError("Neither 'Host_description' nor 'Host_descripton' column found in PHIbase data.")
-
-    # Define the list of categories to keep
-    keep = ["monocots", "eudicots", "flowering plants",
-            "basidiomycetes", "seed plants", "eukaryotes"]
-
-    # Filter the dataframe based on the host column values
-    phibase = phibase[phibase[host_column].isin(keep)]
+    # Removed filtering section for PHIbase as using new species list file instead
 
     #Merge the two datasets into one, only keeping species name ===
     # Rename the columns to a common name ('species_name')
@@ -212,7 +198,7 @@ def main():
     # Combine the species names from both DataFrames only retain unique values
     unique_species_df = pd.concat([phibase, risk_register]).drop_duplicates().reset_index(drop=True)
     #Note - could add extra species here not in the databases if wanted
-    print("Number of unique before taxID species:", len(unique_species_df))
+    print("Number of unique before taxaID species:", len(unique_species_df))
     
     # Get the TaxID for each species in the dataframe ===
     unique_species_df['taxid'] = unique_species_df['species_name'].apply(get_taxid)
@@ -222,7 +208,7 @@ def main():
     #Convert taxid to integer
     unique_species_df['taxid'] = unique_species_df['taxid'].astype(int)
 
-    unique_species_df.to_csv("unique_species_python.csv", index=False)
+    unique_species_df.to_csv(args.output + "unique_species_python.csv", index=False)
 
     # Download Refseq & Genbank tables ===
     # Only need to do this occassionally to keep up to date as it takes a long time
