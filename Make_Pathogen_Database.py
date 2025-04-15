@@ -7,12 +7,15 @@ import requests
 
 # Script to create a database of pathogens from PHIbase and DEFRA Risk Register
 # In conda environment pathogen-database
-# Usage: python scripts/Make_Pathogen_Database.py \
-#  --phibase Pathogen_Database_Test/phibase_test.csv \
-#  --risk_register Pathogen_Database_Test/Risk_Register_Test.csv \
-#  --output Download_MMYY_
+# python scripts/Make_Pathogen_Database.py \
+#   --phibase "$PHIBASE_CSV" \
+#   --risk_register "$RISK_REGISTER_CSV" \
+#   --output "$OUTDIR/${DATE_TAG}_" \
 
-# Output of this script can then be used in download.py
+
+# Script outputs 
+#   - a CSV file with unique species names and their corresponding TaxIDs
+#   - a JSON file with download links for the genomes to be used in `download.py`
 
 # Initialize NCBI Taxa object ===
 # this is instead of accessionTaxa.sql in R script
@@ -158,6 +161,26 @@ def save_to_json(df, output_path):
     with open(output_path, 'w') as json_file:
         json.dump(records, json_file, indent=4)
 
+
+def save_summary_file(accessions_df, output_path):
+    """
+    Generates and saves a summary of the accessions DataFrame.
+    """
+    summary = {
+        "total_accessions": len(accessions_df),
+        "assembly_level_counts": accessions_df['type'].value_counts().to_dict(),
+        "refseq_category_counts": accessions_df['ftp_path'].apply(
+            lambda x: "RefSeq" if "refseq" in x else "GenBank"
+        ).value_counts().to_dict()
+    }
+    
+    # Save the summary to a JSON file
+    summary_path = output_path + "_summary.json"
+    with open(summary_path, 'w') as summary_file:
+        json.dump(summary, summary_file, indent=4)
+    
+    print(f"Summary file saved to {summary_path}")
+
 def main():
     #Add command line arguments ===
     parser = argparse.ArgumentParser(description="Process PHIbase and Risk Register input files.")
@@ -274,10 +297,13 @@ def main():
     accessions_df_links = generate_download_links(accessions_df)
 
     # Define the output path for the JSON file
-    output_path = args.output + ".json"
+    output_path = args.output + "download_input.json"
 
     # Save the results to JSON
     save_to_json(accessions_df_links, output_path)
+
+    # Save the summary file of the accessions DataFrame
+    save_summary_file(accessions_df, args.output)
 
 if __name__ == "__main__":
     main()
