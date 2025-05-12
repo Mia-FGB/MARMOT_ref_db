@@ -63,6 +63,7 @@ mkdir -p "$OUTDIR/logs"
 
 # Set up logging
 LOGFILE="$OUTDIR/logs/build_reference_database.log"
+> "$LOGFILE" # Wipe the log file if it already exists
 exec > >(tee -a "$LOGFILE") 2>&1 # Redirect stdout and stderr to log file
 echo "Logging to $LOGFILE"
 
