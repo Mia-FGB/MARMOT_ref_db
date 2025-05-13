@@ -4,18 +4,53 @@ setwd("~/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Pathogen_Data
 library(ggplot2)
 library(dplyr)
 library(tidyverse)
+library(readr)
+library(fs)  # for file path safety
+library(stringr)
 
+# Set paths and read in the data -----
+# Get command line arguments
+args <- commandArgs(trailingOnly = TRUE)
 
-# Risk data ------
+# Expecting: Rscript create_risk_plots.R <input_dir>
+if (length(args) < 1) {
+  stop("Usage: Rscript create_risk_plots.R <input_dir>")
+}
+
+# input_dir is where the downloaded outputs from the pipeline have been saved
+input_dir <- args[1]
+
+# Alternatively provide the path, when not running on command line 
+# input_dir <- "~/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Air_Samples/MARMOT_Outputs/test"
+
+# Construct output directory path
+output_dir <- path(input_dir, "Graphs")
+
+# Check and create the graph output directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+read_input_file <- function(filename, input_dir, delim = "\t") {
+  readr::read_delim(fs::path(input_dir, filename), delim = delim)
+}
+
+# Read all required files
+lcaparse_perread <- read_input_file("lcaparse_perread.txt", input_dir)
+genome_coverage <- read_input_file("genome_coverage_all.txt", input_dir)
+read_numbers     <- read_input_file("read_numbers.tsv", input_dir)
 
 # Created with ~/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Pathogen_Database/scripts/generate_risk_table.py
-# Should match the pathogen database used for the analysis
-risk_table <- read.csv("risk_table.csv")
+# Same risk table for every analysis which lives in Pathogen_Database
+risk_table <- read.csv("~/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Pathogen_Database/risk_table.csv")
 
+
+# Process data ------------------------------------------------------------
+
+# Risk data ------
 # Filter out viruses as their species names aren't correct
 risk_table <- risk_table %>%
   filter(Type_of_pest != ("Virus or Viroid"))
-
 
 # Look at the risk data - see how many species are present more than once
 risk_counts <- risk_table %>%
@@ -49,21 +84,50 @@ collapsed_risk_table <- risk_table %>%
 
 
 #Lcaparse data ----
-# Noticed an issue with this file that stems back to the pipeline so need to go and fix that!
-lcaparse_perread <- 
-  read_delim("/Users/berelsom/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Air_Samples/MARMOT_Outputs/cf_23_subsamp/lcaparse_perread.txt",
-             delim = "\t")
+
+# Make anything below species level species instead e.g. subspecies to species 
+# This does not handle species group / complex
+lcaparse_perread <- lcaparse_perread %>%
+  mutate(
+    Species = case_when(
+      Taxon_Rank == "subspecies" ~ str_extract(Taxon_Name, "^[^ ]+\\s[^ ]+(-[^ ]+)?"),
+      TRUE ~ Taxon_Name
+    )
+  )
+
+# Summarise and filter the file to have one row per species per barcode
+# Loose the taxonID in this step as it is complicated by the combined subspecies 
+lcaparse <- lcaparse_perread %>%
+  group_by(Barcode, Species) %>%
+  summarise(
+    Taxon_Name = first(Taxon_Name),
+    Taxon_Rank = first(Taxon_Rank),
+    Read_Count = n_distinct(Read_ID),
+    Avg_Mean_Identity = mean(Mean_Identity, na.rm = TRUE)
+  )
+
+# merge read numbers & lcaparse on Barcode
+read_numbers <- read_numbers %>% 
+  rename(TotalReadCount = Read_Count)
+
+lcaparse <- lcaparse %>% 
+  left_join(read_numbers, by = "Barcode")  
+
+#Create normalised read count columns 
+lcaparse <- lcaparse %>% 
+  mutate(
+    HP100k = (Read_Count / TotalReadCount) * 100000, 
+    Filtered_HP100k = (Read_Count / FilterReadCount) * 100000)
 
 
-
-# Merge the lcaparse & risk data   -------       
-merged_df <- left_join(combined_df, collapsed_risk_table, by = "Species") %>% 
-  filter(Read_Count >10) %>% # Filter low level species that could be artefacts, may need to play with filter 
-  filter(Barcode <=39) # Filter to jsut be barcode 1 - 39 as this is CF 2023 data (won't do this in future)
+# Combining Read & DEFRA Risk Data    -----
+# This will loose the unassigned reads so if I want them in the graph would have to add back in later
+lca_risk <- lcaparse %>%
+  left_join(collapsed_risk_table, by = "Species") %>% 
+  filter(Read_Count >1) # Filter low level species that could be artefacts, may need to play with filter 
 
 # Add a column that groups by risk factor - groupings based on DEFRA documentation
-
-merged_df  <- merged_df  %>%
+lca_risk  <- lca_risk  %>%
   mutate(
     Risk_Category = case_when(
       Risk_Rating_mitigated <= 14                     ~ "Blue",
@@ -76,22 +140,22 @@ merged_df  <- merged_df  %>%
   )
 
 # Improve UK column - unknown to be n/a
-merged_df$UK[is.na(merged_df$UK) | merged_df$UK == "Unknown"] <- "N/A"
+lca_risk$UK[is.na(lca_risk$UK) | lca_risk$UK == "Unknown"] <- "N/A"
 
 
-merged_df$Risk_Category <- factor(
-  merged_df$Risk_Category,
+lca_risk$Risk_Category <- factor(
+  lca_risk$Risk_Category,
   levels = c("Red", "Orange", "Yellow", "Green", "Blue", "Unclassified")
 )
 
-merged_df$Barcode <- 
-  factor(merged_df$Barcode, levels = sort(unique(merged_df$Barcode)))
+lca_risk$Barcode <- 
+  factor(lca_risk$Barcode, levels = sort(unique(lca_risk$Barcode)))
 
-#dataframe with only data that have a risk category
-risk_only <- merged_df %>% 
+#Summarise the data to only include species with a DEFRA defined Risk category
+risk_only <- lca_risk %>% 
   filter(Risk_Category != ("Unclassified"))
 
-# Outputs ----
+# Defra Risk plots ------
 colours <- c(
   Blue = "#66c2a5",
   Green = "#a6d854",
@@ -101,58 +165,109 @@ colours <- c(
   Unclassified = "grey"
 )
 
-# Plot stacked bar chart
-stacked <- ggplot(
-  merged_df, # To plot with unclassified 
-  # risk_only,   # To plot without unclassified 
-       aes(x = Barcode, y = Percentage_of_Reads, fill = Risk_Category)) +
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = colours) +
-  labs(
-    title = "Read Distribution by Defra Risk Category",
-    x = "Barcode",
-    y = "Percentage of Reads",
-    fill = "Risk Category"
-  ) +
-  theme_minimal() 
+# Plot stacked bar chart of defra risk categories --
+plot_risk_stacked <- function(data, y_col, save_path, colours) {
+  message("Plotting graph: ", save_path)
+  p <- ggplot(data, aes(x = Barcode, y = .data[[y_col]], fill = Risk_Category)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = colours) +
+    labs(
+      title = "Read Distribution by Defra Risk Category",
+      x = "Barcode",
+      y = "Reads per 100,000",
+      fill = "Risk Category"
+    ) +
+    theme_minimal()
+  
+  # print(p)
+  
+  ggsave(save_path, p, width = 12, height = 6)
+}
 
-ggsave("test_plot.svg", stacked, width = 12, height =6 )
+# Plot with the unclassified and without, also with different read normalisation 
+plot_risk_stacked(risk_only, y="HP100k",
+                  save_path = fs::path(output_dir, "HP100k_risk.svg"),
+                  colours = colours)
+plot_risk_stacked(lca_risk, y="HP100k",
+                  save_path = fs::path(output_dir, "HP100k_all.svg"),
+                  colours = colours)
+plot_risk_stacked(risk_only, y="Filtered_HP100k",
+                  save_path = fs::path(output_dir, "Filtered_HP100k_risk.svg"),
+                  colours = colours)
+plot_risk_stacked(lca_risk, y="Filtered_HP100k", 
+                  save_path = fs::path(output_dir, "Filtered_HP100k_all.svg"),
+                  colours = colours)
 
-# Faceted by Presence 
-risk_only$UK<- factor(
-  risk_only$UK,
-  levels = c("Absent", "Present (Limited)", "Present (Unknown Distribution)",
-             "Present (Widespread)", "N/A")
-)
+# Faceted by Presence
+plot_risk_facet <- function(data, save_path, y_col, colours) {
+  # Ensure factor levels are consistent
+  data$UK <- factor(
+    data$UK,
+    levels = c("Absent", "Present (Limited)", "Present (Unknown Distribution)",
+               "Present (Widespread)", "N/A")
+  )
+  message("Plotting graph: ", save_path)
+  p <- ggplot(data, aes(x = Barcode, y = .data[[y_col]], fill = Risk_Category)) +
+    facet_wrap(~ UK, scales = "free_y") +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = colours) +
+    labs(
+      title = "Read Distribution by Defra Risk Category",
+      x = "Barcode",
+      y = "Reads per 100,000",
+      fill = "Risk Category"
+    ) +
+    theme_minimal()
+  
+  # print(p)
+  
+  ggsave(save_path, p, width = 16, height = 6)
+}
 
-presence <- ggplot(risk_only,
-  aes(x = Barcode, y = Percentage_of_Reads, fill = Risk_Category)) +
-  facet_wrap(~ UK, scales = "free_y") +
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = colours) +
-  labs(
-    title = "Read Distribution by Defra Risk Category",
-    x = "Barcode",
-    y = "Percentage of Reads",
-    fill = "Risk Category"
-  ) +
-  theme_minimal()
-
-ggsave("test_facet_plot.svg", presence, width = 16, height =6 )
-
-
-# Maybe a file with some general stats about the data e.g. which had the highest risk rating 
+# Plot with the unclassified and without, also with different read normalisation 
+plot_risk_facet(risk_only, y="HP100k",
+                  save_path = fs::path(output_dir, "HP100k_risk_facet.svg"),
+                  colours = colours)
+plot_risk_facet(lca_risk, y="HP100k",
+                  save_path = fs::path(output_dir, "HP100k_all_facet.svg"),
+                  colours = colours)
+plot_risk_facet(risk_only, y="Filtered_HP100k",
+                  save_path = fs::path(output_dir, "Filtered_HP100k_risk_facet.svg"),
+                  colours = colours)
+plot_risk_facet(lca_risk, y="Filtered_HP100k", 
+                  save_path = fs::path(output_dir, "Filtered_HP100k_all_facet.svg"),
+                  colours = colours)
 
 
+# 9 Pathogens I am particularly interested in --------
+
+# Pathogens of interest
+target_genera <- c(
+  "Puccinia", "Blumeria", "Fusarium", "Zymoseptoria", "Ustilago", "Magnaporthe",
+  "Pyrenophora", "Claviceps", "Parastagonospora", "Phaeosphaeria")
+
+# Create a single regex pattern that matches any of the genera
+genera_pattern <- str_c(target_genera, collapse = "|")
+
+# Filter lcaparse to keep only rows matching any of the target genera
+lcaparse_target <- lcaparse %>%
+  filter(str_detect(Taxon_Name, genera_pattern))
+
+# Hard to know how I would want to plot this with such limited data 
+# Maybe another bar chart for each pathogen by barcode or a heatmap just of these pathogens 
 
 
 
 
 
-# # Older code - to be deleted once all working
-# # Was using the summary file instead want to be per read
+
+
+
+
+# # Older code -----
+# Using the summary file, no longer using this but the per read
 # 
-# # Species data -------
+# # Species data 
 # #This specific file was copied 
 # lca_parse <- read.csv("lcaparse_summary.txt", sep = "\t")
 # 
