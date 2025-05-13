@@ -5,35 +5,11 @@ library(ggplot2)
 library(dplyr)
 library(tidyverse)
 
-# Species data -------
-#This specific file was copied 
-lca_parse <- read.csv("lcaparse_summary.txt", sep = "\t")
-
-# Extract species from lca_parse
-species_df <- lca_parse %>%
-  filter(Taxon_Rank == "species") %>%
-  mutate(Species = str_split(Taxon_Path, ",", simplify = FALSE) %>%
-           map_chr(~ tail(.x, 1)))
-
-# Get all non-species rows (higher taxa)
-higher_taxa_df <- lca_parse %>%
-  filter(Taxon_Rank != "species") %>%
-  group_by(Barcode) %>%
-  summarise(
-    Read_Count = sum(as.numeric(Read_Count), na.rm = TRUE),
-    Percentage_of_Reads = sum(as.numeric(Percentage_of_Reads), na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    Species = "Higher Taxa",
-    Taxon_Rank = "higher",
-    Taxon_Path = NA  # or "Higher-level taxon"
-  )
-
-# Combine species & higher taxa dfs
-combined_df <- bind_rows(species_df, higher_taxa_df) 
 
 # Risk data ------
+
+# Created with ~/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Pathogen_Database/scripts/generate_risk_table.py
+# Should match the pathogen database used for the analysis
 risk_table <- read.csv("risk_table.csv")
 
 # Filter out viruses as their species names aren't correct
@@ -70,6 +46,14 @@ collapsed_risk_table <- risk_table %>%
     
     .groups = "drop"
   )
+
+
+#Lcaparse data ----
+# Noticed an issue with this file that stems back to the pipeline so need to go and fix that!
+lcaparse_perread <- 
+  read_delim("/Users/berelsom/Library/CloudStorage/OneDrive-NorwichBioScienceInstitutes/Air_Samples/MARMOT_Outputs/cf_23_subsamp/lcaparse_perread.txt",
+             delim = "\t")
+
 
 
 # Merge the lcaparse & risk data   -------       
@@ -158,4 +142,41 @@ ggsave("test_facet_plot.svg", presence, width = 16, height =6 )
 
 
 # Maybe a file with some general stats about the data e.g. which had the highest risk rating 
+
+
+
+
+
+
+
+# # Older code - to be deleted once all working
+# # Was using the summary file instead want to be per read
+# 
+# # Species data -------
+# #This specific file was copied 
+# lca_parse <- read.csv("lcaparse_summary.txt", sep = "\t")
+# 
+# # Extract species from lca_parse
+# species_df <- lca_parse %>%
+#   filter(Taxon_Rank == "species") %>%
+#   mutate(Species = str_split(Taxon_Path, ",", simplify = FALSE) %>%
+#            map_chr(~ tail(.x, 1)))
+# 
+# # Get all non-species rows (higher taxa)
+# higher_taxa_df <- lca_parse %>%
+#   filter(Taxon_Rank != "species") %>%
+#   group_by(Barcode) %>%
+#   summarise(
+#     Read_Count = sum(as.numeric(Read_Count), na.rm = TRUE),
+#     Percentage_of_Reads = sum(as.numeric(Percentage_of_Reads), na.rm = TRUE),
+#     .groups = "drop"
+#   ) %>%
+#   mutate(
+#     Species = "Higher Taxa",
+#     Taxon_Rank = "higher",
+#     Taxon_Path = NA  # or "Higher-level taxon"
+#   )
+# 
+# # Combine species & higher taxa dfs
+# combined_df <- bind_rows(species_df, higher_taxa_df) 
 
