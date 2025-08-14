@@ -1,309 +1,347 @@
-import pandas as pd 
+import pandas as pd
 import json
 import csv
 import argparse
 from ete3 import NCBITaxa
 import requests
 
-# Script to create a database of pathogens from PHIbase and DEFRA Risk Register
-# In conda environment pathogen-database
-# python scripts/Make_Pathogen_Database.py \
+# Example:
+# python Make_Pathogen_Database_one_per_species.py \
 #   --phibase "$PHIBASE_CSV" \
 #   --risk_register "$RISK_REGISTER_CSV" \
-#   --output "$OUTDIR/${DATE_TAG}_" \
+#   --output "$OUTDIR/${DATE_TAG}_"
 
+REQUEST_TIMEOUT = 30  # seconds
 
-# Script outputs 
-#   - a CSV file with unique species names and their corresponding TaxIDs
-#   - a JSON file with download links for the genomes to be used in `download.py`
+# Optional synonym map (left empty so nothing is forced)
+KNOWN_SYNONYMS = {
+    # "Some tricky name": 12345,
+}
 
-# Initialize NCBI Taxa object ===
-# this is instead of accessionTaxa.sql in R script
+# Initialise NCBI Taxa
 ncbi = NCBITaxa()
-# Uncomment the following line only if you need to refresh the database (Downloads the taxonomy database)
-#ncbi.update_taxonomy_database()
+# If you need to refresh the local taxonomy, run once manually:
+# ncbi.update_taxonomy_database()
 
-#Functions ===
+# --------------------------
+# Helpers
+# --------------------------
+
+def normalise_name(name: str) -> str:
+    s = str(name)
+    s = s.replace("’", "'").replace("‘", "'").replace("`", "'")
+    s = s.replace("–", "-").replace("—", "-")
+    s = " ".join(s.split())
+    return s.strip().strip('"').strip("'")
+
 
 def download_file(url, filename):
-    response = requests.get(url)
-    response.raise_for_status()  # Check that the request was successful
-    with open(filename, 'wb') as file:
-        file.write(response.content)
+    resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    with open(filename, 'wb') as fh:
+        fh.write(resp.content)
 
-# Function to get TaxID for a species 
+
 def get_taxid(species_name):
+    """Resolve a species to a TaxID with fallbacks and clear logging, without forcing any species."""
     try:
-        # Use NCBITaxa to fetch TaxID
-        taxid = ncbi.get_name_translator([species_name])
-        print("Getting TaxaID for", species_name)
-        return taxid[species_name][0] if species_name in taxid else None
+        name_raw = str(species_name)
+        name = normalise_name(name_raw)
+
+        # exact
+        tx = ncbi.get_name_translator([name])
+        if name in tx and tx[name]:
+            tid = int(tx[name][0])
+            print(f"Getting TaxaID for {name} -> {tid}")
+            return tid
+
+        # variants
+        variants = {name, name.title(), name.lower(), name.upper()}
+        for v in variants:
+            tx = ncbi.get_name_translator([v])
+            if v in tx and tx[v]:
+                tid = int(tx[v][0])
+                print(f"Getting TaxaID for {name} -> {tid} (via {v})")
+                return tid
+
+        # known synonyms or pins if you ever choose to add them
+        if name in KNOWN_SYNONYMS:
+            tid = int(KNOWN_SYNONYMS[name])
+            print(f"Getting TaxaID for {name} -> {tid} (via KNOWN_SYNONYM)")
+            return tid
+
+        print(f"Getting TaxaID for {name} -> FAILED")
+        return None
     except Exception as e:
         print(f"Error fetching TaxID for {species_name}: {e}")
         return None
 
-#Function to get the best genome for a given taxid 
-def get_best_genome_for_taxid(taxid, ref_gen_df):
-    priority_map = {     # Define priority mapping
+
+def expand_to_descendant_taxa(taxid):
+    """Include all descendants such as subspecies, forma specialis and strains."""
+    try:
+        descendants = ncbi.get_descendant_taxa(int(taxid), intermediate_nodes=True) or []
+        expanded = {int(taxid)}
+        expanded.update(int(t) for t in descendants)
+        return expanded
+    except Exception as e:
+        print(f"Could not expand descendants for {taxid}: {e}")
+        return {int(taxid)}
+
+
+def to_https(url: str) -> str:
+    url = str(url)
+    if url.startswith("ftp://"):
+        return "https://" + url[len("ftp://"):]
+    return url
+
+
+def download_and_parse_assembly_stats(ftp_path):
+    """Download the assembly stats file and return total length."""
+    base = str(ftp_path).rstrip("/")
+    base = to_https(base)
+    asm = base.split("/")[-1]
+    stats_url = f"{base}/{asm}_assembly_stats.txt"
+    try:
+        response = requests.get(stats_url, stream=True, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        for line in response.text.splitlines():
+            if "all\tall\tall\tall\ttotal-length" in line:
+                size = int(line.split('\t')[-1])
+                return size
+    except Exception as e:
+        print(f"Failed to process {stats_url}: {e}")
+    return None
+
+
+def get_longest_accession(df):
+    """Pick the longest assembly by stats, tie break by seq_rel_date."""
+    results = []
+    print("finding the longest genome for provided taxaID")
+    for _, row in df.iterrows():
+        ftp_path = row['ftp_path']
+        refseq_category = row.get('refseq_category', 'na')
+        assembly_level = row.get('assembly_level', 'na')
+        size = download_and_parse_assembly_stats(ftp_path)
+        if size is not None:
+            results.append((row, size))
+            print(f"Processed {ftp_path}: size={size}, refseq_category={refseq_category}, assembly_level={assembly_level}")
+        else:
+            print(f"Could not read assembly stats for {ftp_path}")
+
+    if not results:
+        print("No assembly stats available, falling back to first candidate")
+        return df.iloc[0]
+
+    def sort_key(item):
+        row, size = item
+        date = row.get('seq_rel_date', '')
+        return (size, date)
+
+    sorted_rows = sorted(results, key=sort_key, reverse=True)
+    return sorted_rows[0][0]
+
+
+def select_best_assembly(candidates_df):
+    """Select best assembly using ref or representative preference, assembly level, then length and date."""
+    priority_map = {
         'Complete Genome': 1,
         'Chromosome': 2,
         'Scaffold': 3,
         'Contig': 4
     }
-
-    # Filter for the given taxid
-    genomes = ref_gen_df[ref_gen_df['taxid'] == taxid].copy()  # Create a copy here
-    if genomes.empty:
-        return "No genome found for taxid", taxid
-
-    # Assign priorities
-    genomes['priority'] = genomes['assembly_level'].map(priority_map).fillna(5)
-
-    # Step 1: Check for a reference genome
-    ref_genome = genomes[genomes['refseq_category'] == 'reference genome']
-    if not ref_genome.empty:
-        # Directly return the single reference genome
-        ref_genome = ref_genome.iloc[0]
-        return (
-            int(ref_genome['taxid']),
-            ref_genome['organism_name'],
-            ref_genome['assembly_accession'],
-            ref_genome['ftp_path'],
-            ref_genome['assembly_level']
-        )
-    
-    # If no reference genomes then sort by priority and filter the top priority group
-    genomes = genomes.sort_values(by='priority')
-    top_priority = genomes.iloc[0]['priority']  # Get the top priority value (e.g. complete genome / chromosme...)
-    top_priority_genomes = genomes[genomes['priority'] == top_priority]  # Filter only rows with top priority
-
-    # Select the best genome (longest if ties exist)
-    if len(top_priority_genomes) > 1:
-        best_genome = get_longest_accession(top_priority_genomes)
-    else:
-        best_genome = top_priority_genomes.iloc[0]
-
-    return (
-        int(best_genome['taxid']),
-        best_genome['organism_name'],
-        best_genome['assembly_accession'],
-        best_genome['ftp_path'],
-        best_genome['assembly_level']
-    )
-
-
-def download_and_parse_assembly_stats(ftp_path):
-    """
-    Downloads the assembly stats file and parses the total size.
-    """
-    # Construct the URL for the stats file
-    assembly_name = ftp_path.strip('/').split('/')[-1]
-    stats_url = f"{ftp_path}/{assembly_name}_assembly_stats.txt"
-    
-    try:
-        # Download the file
-        response = requests.get(stats_url, stream=True)
-        response.raise_for_status()
-        
-        # Read and parse the lines
-        lines = response.text.splitlines()
-        for line in lines:
-            if "all\tall\tall\tall\ttotal-length" in line:
-                # Extract the size (last field in the tab-separated line)
-                size = int(line.split('\t')[-1])
-                return size
-    except Exception as e:
-        print(f"Failed to process {stats_url}: {e}")
+    if candidates_df.empty:
         return None
 
-def get_longest_accession(df):
-    """
-    Finds the row for the longest genome for each taxon without modifying the dataframe structure.
-    """
-    results = []
-    print("finding the longest genome for provided taxaID")
-    
-    for _, row in df.iterrows():
-        ftp_path = row['ftp_path']
-        #for debugging adding these
-        refseq_category = row['refseq_category']
-        assembly_level = row['assembly_level']
-        
-        size = download_and_parse_assembly_stats(ftp_path)
-        if size is not None:
-            results.append((row, size))  # Keep the original row and the computed size
-            #for debugging
-            print(f"Processed {ftp_path}: size={size}, refseq_category={refseq_category}, assembly_level={assembly_level}")
-    
-    # Sort rows by size and release date, and pick the largest and newest for each taxon
-    sorted_rows = sorted(results, key=lambda x: (x[1], x[0]['seq_rel_date']), reverse=True)  # Sort by size and date descending
-    longest_row = sorted_rows[0][0]  # Get the row with the largest size and newest date
+    df = candidates_df.copy()
+    df['priority'] = df['assembly_level'].map(priority_map).fillna(5)
 
-    return longest_row
+    # Prefer reference or representative
+    ref_like = df[df['refseq_category'].isin(['reference genome', 'representative genome'])]
+    if not ref_like.empty:
+        df = ref_like
 
-#Add strings to generate URLs for downloading the genome and MD5 checksum files 
-def generate_download_links(accessions_df):
-    # Create the 'dlLink' and 'dlLinkMD5' columns
-    accessions_df['dlLink'] = accessions_df['ftp_path'].apply(lambda x: f"{x}/{x.split('/')[-1]}_genomic.fna.gz")
-    accessions_df['dlLinkMD5'] = accessions_df['ftp_path'].apply(lambda x: f"{x.replace('ftp:', '')}/md5checksums.txt")
-    
-    # Select the relevant columns
-    selected_columns = accessions_df[['taxid', 'organism_name', 'assembly_accession', 'dlLink', 'dlLinkMD5',]]
+    # Sort by priority and restrict to top tier
+    df = df.sort_values(by='priority', kind='stable')
+    top_priority = df.iloc[0]['priority']
+    df_top = df[df['priority'] == top_priority]
 
-    return selected_columns
+    # If multiple remain, use assembly stats to pick the longest and newest
+    if len(df_top) > 1:
+        return get_longest_accession(df_top)
+    return df_top.iloc[0]
 
-#Create output download file
+
+def generate_download_links_row(ftp_path):
+    base = to_https(str(ftp_path).rstrip("/"))
+    asm = base.split("/")[-1]
+    genomic_url = f"{base}/{asm}_genomic.fna.gz"
+    md5_url = f"{base}/md5checksums.txt"
+    return genomic_url, md5_url
+
+
 def save_to_json(df, output_path):
-    # Convert the DataFrame to a list of dictionaries
     records = df.to_dict(orient='records')
-    
-    # Save to a JSON file
     with open(output_path, 'w') as json_file:
         json.dump(records, json_file, indent=4)
 
 
-def save_summary_file(accessions_df, output_path):
-    """
-    Generates and saves a summary of the accessions DataFrame.
-    """
+def save_summary_and_missing(accessions_df, output_path_prefix, missing_species_list):
     summary = {
-        "total_accessions": len(accessions_df),
-        "assembly_level_counts": accessions_df['type'].value_counts().to_dict(),
-        "refseq_category_counts": accessions_df['ftp_path'].apply(
-            lambda x: "RefSeq" if "refseq" in x else "GenBank"
-        ).value_counts().to_dict()
+        "total_species_with_selection": len(accessions_df),
+        "assembly_level_counts": accessions_df['type'].value_counts(dropna=False).to_dict(),
+        "refseq_category_counts": accessions_df['source_db'].value_counts(dropna=False).to_dict(),
+        "missing_species_count": len(missing_species_list),
     }
-    
-    # Save the summary to a JSON file
-    summary_path = output_path + "_summary.json"
+    summary_path = output_path_prefix + "_summary.json"
     with open(summary_path, 'w') as summary_file:
         json.dump(summary, summary_file, indent=4)
-    
     print(f"Summary file saved to {summary_path}")
 
+    missing_path = output_path_prefix + "missing_species.json"
+    with open(missing_path, 'w') as fh:
+        json.dump(missing_species_list, fh, indent=4)
+    print(f"Missing species list saved to {missing_path}")
+
+# --------------------------
+# Main
+# --------------------------
+
 def main():
-    #Add command line arguments ===
-    parser = argparse.ArgumentParser(description="Process PHIbase and Risk Register input files.")
+    parser = argparse.ArgumentParser(description="Process PHIbase and Risk Register input files, selecting one genome per species.")
     parser.add_argument("-p", "--phibase", required=True, help="Path to the PHIbase input CSV file")
     parser.add_argument("-r", "--risk_register", required=True, help="Path to the Risk Register input CSV file")
     parser.add_argument("-o", "--output", default="download", help="Output file prefix for the download JSON")
+    args = parser.parse_args()
 
-    # Parse the command line arguments
-    args = parser.parse_args() 
-
-
-    # DEFRA Risk Register database ===
-    # https://planthealthportal.defra.gov.uk/pests-and-diseases/uk-plant-health-risk-register/downloadEntireRiskRegister.cfm 
-    #Download the most up to date version each time
-    #read in risk register
+    # Read sources
     print("Reading in", args.risk_register)
     risk_register = pd.read_csv(args.risk_register)
-    risk_register['Type of pest'] = risk_register['Type of pest'].fillna("")  # Fill NaN values with empty strings
-    # Define the list of items to remove
-    remove = ["Insect", "Mite", "Nematode", "Plant"] 
-    # Filter rows where 'Type of pest' is not in the remove list
-    risk_register = risk_register[~risk_register['Type of pest'].isin(remove)] 
-    # Remove single quotes from 'Pest Name' column if present
-    risk_register['Pest Name'] = risk_register['Pest Name'].str.replace("'", "")
+    risk_register['Type of pest'] = risk_register['Type of pest'].fillna("")
+    remove = ["Insect", "Mite", "Nematode", "Plant"]
+    risk_register = risk_register[~risk_register['Type of pest'].isin(remove)]
+    risk_register['Pest Name'] = risk_register['Pest Name'].astype(str).str.replace("'", "", regex=False).str.strip()
 
-    # PHIbase https://github.com/PHI-base/data/tree/master/releases ===
-    #Download the most up to date version each time 
-    #read in phibase 
     print("Reading in", args.phibase)
     phibase = pd.read_csv(args.phibase)
-    # Removed filtering section for PHIbase as using new species list file instead
+    phibase['Pathogen_species'] = phibase['Pathogen_species'].astype(str).str.strip()
 
-    #Merge the two datasets into one, only keeping species name ===
-    # Rename the columns to a common name ('species_name')
+    # Build species list
     risk_register = risk_register[['Pest Name']].rename(columns={'Pest Name': 'species_name'})
     phibase = phibase[['Pathogen_species']].rename(columns={'Pathogen_species': 'species_name'})
+    species_df = pd.concat([phibase, risk_register]).drop_duplicates().reset_index(drop=True)
+    species_df['species_name'] = species_df['species_name'].astype(str).str.strip()
 
-    # Combine the species names from both DataFrames only retain unique values
-    unique_species_df = pd.concat([phibase, risk_register]).drop_duplicates().reset_index(drop=True)
-    #Note - could add extra species here not in the databases if wanted
-    print("Number of unique before taxaID species:", len(unique_species_df))
-    
-    # Get the TaxID for each species in the dataframe ===
-    unique_species_df['taxid'] = unique_species_df['species_name'].apply(get_taxid)
+    print("Number of unique before taxaID species:", len(species_df))
+
+    # Resolve taxids for species
+    species_df['species_taxid'] = species_df['species_name'].apply(get_taxid)
     print("Finished getting TaxaIDs")
-    # Drop rows with missing TaxID
-    unique_species_df = unique_species_df.dropna(subset=['taxid'])
-    #Convert taxid to integer
-    unique_species_df['taxid'] = unique_species_df['taxid'].astype(int)
 
-    unique_species_df.to_csv(args.output + "unique_species_python.csv", index=False)
+    # Report failures
+    failed = species_df[species_df['species_taxid'].isna()]
+    if not failed.empty:
+        print("Names with no TaxID:", list(failed['species_name']))
 
-    # Download Refseq & Genbank tables ===
-    # Only need to do this occassionally to keep up to date as it takes a long time
-    print("Downloading RefSeq dataframe")
-    download_file("https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_refseq.txt", "assembly_summary_refseq.txt")
-    print("Downloading GenBank dataframe")
-    download_file("https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt", "assembly_summary_genbank.txt")
+    # Keep only resolved
+    species_df = species_df.dropna(subset=['species_taxid']).copy()
+    species_df['species_taxid'] = species_df['species_taxid'].astype(int)
 
-    # Read in RefSeq dataframe
+    # Save the resolved list
+    species_df.to_csv(args.output + "unique_species_python.csv", index=False)
+
+    # Download assembly tables - only every so often 
+    # print("Downloading RefSeq dataframe")
+    # download_file("https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_refseq.txt", "assembly_summary_refseq.txt")
+    # print("Downloading GenBank dataframe")
+    # download_file("https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt", "assembly_summary_genbank.txt")
+
+    # Read them
     print("Reading in RefSeq dataframe")
-    refseq = pd.read_csv("assembly_summary_refseq.txt", sep='\t', skiprows=1, header=0, dtype='object')
-    # Remove columns with NaN names
+    refseq = pd.read_csv("assembly_summary_refseq.txt", sep='\t', skiprows=1, header=0, dtype='object', low_memory=False)
     refseq = refseq.loc[:, refseq.columns.notna()]
     refseq = refseq.rename(columns={'#assembly_accession': 'assembly_accession'})
 
-    # Read in GenBank dataframe
     print("Reading in GenBank dataframe")
-    genbank = pd.read_csv("assembly_summary_genbank.txt", sep='\t', skiprows=1, header=0, dtype='object')
-    # Remove columns with NaN names
+    genbank = pd.read_csv("assembly_summary_genbank.txt", sep='\t', skiprows=1, header=0, dtype='object', low_memory=False)
     genbank = genbank.loc[:, genbank.columns.notna()]
     genbank = genbank.rename(columns={'#assembly_accession': 'assembly_accession'})
 
-    #Merge the assembly databases ====
-    #First Remove entries from genbank that are present in refseq to avoid redundancies 
-    # Convert refseq's 'gbrs_paired_asm' column to a set for faster comparison
+    # Merge, removing GenBank entries mirrored in RefSeq
     refseq_set = set(refseq['gbrs_paired_asm'])
-    # Filter genbank DataFrame by excluding entries where 'assembly_accession' is in refseq_set
     genbank_filtered = genbank[~genbank['assembly_accession'].isin(refseq_set)]
-    # Merge the two DataFrames (combine them into one)
     ref_gen = pd.concat([refseq, genbank_filtered], ignore_index=True)
+
+    # Keep any ftp or https entry, we rewrite for downloads later
+    ref_gen = ref_gen[ref_gen['ftp_path'].astype(str).str.contains("://", na=False)].copy()
+
+    # Dtypes
     ref_gen['taxid'] = ref_gen['taxid'].astype(int)
 
+    # For each species, expand to descendants and pick one best assembly
+    accessions_rows = []
+    missing_species = []
 
-    # Filter ref_gen for species present among the PHIbase and DEFRA pathogens - using taxid
-    ref_gen_match = ref_gen[ref_gen['taxid'].isin(unique_species_df['taxid'])]
+    print(f"Total input species with TaxIDs: {len(species_df)}")
+    for _, srow in species_df.iterrows():
+        species_name = srow['species_name']
+        species_taxid = int(srow['species_taxid'])
 
-    #Only take rows with an https entry
-    ref_gen_match = ref_gen_match[ref_gen_match['ftp_path'].str.contains("https://")]
+        # Expand to descendants so subspecies and formae speciales are included
+        expanded_taxids = expand_to_descendant_taxa(species_taxid)
 
-    # Create a list to store the data
-    accessions_list = []
-    # Iterate over the unique taxids in ref_gen_match and call the function
-    for taxid in sorted(ref_gen_match['taxid'].unique()):
-        print(f"Processing taxid {taxid}")
-        try:
-            # Call your function to get the best genome
-            taxid, organism_name, assembly_accession, ftp_path, genome_type = get_best_genome_for_taxid(taxid, ref_gen_match)
-            
-            # Append the result as a dictionary to the list
-            accessions_list.append({
-                'taxid': taxid,
-                'organism_name': organism_name,
-                'assembly_accession': assembly_accession,
-                'ftp_path': ftp_path,
-                'type': genome_type
+        # Candidate assemblies for this species including descendants
+        cand = ref_gen[ref_gen['taxid'].isin(expanded_taxids)].copy()
+        print(f"[SELECT] {species_name} (taxid {species_taxid}) candidates: {len(cand)}")
+
+        # Pick the single best assembly
+        best = select_best_assembly(cand)
+        if best is None:
+            # record as missing
+            missing_species.append({
+                "species_name": species_name,
+                "species_taxid": species_taxid
             })
-        except Exception as e:
-            print(f"Error processing taxid {taxid}: {e}")
+            print(f"[MISS] No assembly selected for {species_name}")
+            continue
 
-    # Convert the list of dictionaries to a DataFrame
-    accessions_df = pd.DataFrame(accessions_list)
+        # Build download links and source db flag
+        dl, md5 = generate_download_links_row(best['ftp_path'])
+        source_db = "RefSeq" if "refseq" in str(best['ftp_path']).lower() else "GenBank"
 
-    accessions_df_links = generate_download_links(accessions_df)
+        accessions_rows.append({
+            "species_name": species_name,                    # input species
+            "species_taxid": species_taxid,                  # input species taxid
+            "selected_taxid": int(best['taxid']),            # taxid of chosen assembly (may be descendant)
+            "organism_name": best['organism_name'],          # organism label from assembly table
+            "assembly_accession": best['assembly_accession'],
+            "ftp_path": best['ftp_path'],
+            "type": best['assembly_level'],
+            "source_db": source_db,
+            "dlLink": dl,
+            "dlLinkMD5": md5
+        })
 
-    # Define the output path for the JSON file
+    # One row per species by construction
+    accessions_df = pd.DataFrame(accessions_rows)
+
+    # Write the download list expected by downstream tooling
+    dl_cols = ["species_name", "species_taxid", "selected_taxid", "organism_name",
+               "assembly_accession", "dlLink", "dlLinkMD5", "type", "source_db"]
     output_path = args.output + "download_input.json"
+    save_to_json(accessions_df[dl_cols], output_path)
+    print(f"Wrote one-genome-per-species download list to {output_path}")
 
-    # Save the results to JSON
-    save_to_json(accessions_df_links, output_path)
+    # Save summary and missing species list
+    save_summary_and_missing(accessions_df, args.output, missing_species)
 
-    # Save the summary file of the accessions DataFrame
-    save_summary_file(accessions_df, args.output)
+    # Friendly tail line
+    if missing_species:
+        names = ", ".join(ms['species_name'] for ms in missing_species[:10])
+        extra = " …" if len(missing_species) > 10 else ""
+        print(f"Species with no identified URLs ({len(missing_species)}): {names}{extra}")
+    else:
+        print("All species had a selected genome")
 
 if __name__ == "__main__":
     main()
