@@ -16,16 +16,16 @@ def generate_genome_length_table(fasta_file, output_prefix):
     
     # Parse the FASTA file
     for record in SeqIO.parse(fasta_file, "fasta"):
-        # Extract taxaID from the header (assuming 'taxid|<id>|...' format)
         header_parts = record.description.split('|')
         if len(header_parts) >= 2 and header_parts[0] == "taxid":
             taxa_id = header_parts[1]
             seq_length = len(record.seq)
-            
             # Aggregate length for this taxaID
             if taxa_id not in genome_lengths:
                 genome_lengths[taxa_id] = 0
             genome_lengths[taxa_id] += seq_length
+        else:
+            print(f"SKIPPED: No taxaID/seq length identified for header: {record.description}")
 
     # Write the output to a file
     with open(output_file, "w") as out_f:

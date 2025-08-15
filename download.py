@@ -132,7 +132,7 @@ def main():
     with open("../" + args.input + '.json', 'r') as f:
         data = json.load(f)
         for entry in tqdm(data, desc="Processing entries"):
-            taxid = entry['taxid']
+            taxid = entry['selected_taxid']
             organism_name = entry['organism_name']
             assembly_accession = entry['assembly_accession']
             fasta_url = entry['dlLink']
